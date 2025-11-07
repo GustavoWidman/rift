@@ -815,7 +815,7 @@ impl VirtualWorkspaceManager {
         for (idx, rule) in self.app_rules.iter().enumerate() {
             if let Some(ref rule_app_id) = rule.app_id {
                 match app_bundle_id {
-                    Some(bundle_id) if rule_app_id == bundle_id => {}
+                    Some(bundle_id) if rule_app_id.to_lowercase() == bundle_id.to_lowercase() => {}
                     _ => continue,
                 }
             }
