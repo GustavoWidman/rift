@@ -1,18 +1,21 @@
 use std::hash::{Hash, Hasher};
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use dispatchr::qos::QoS;
+use dispatchr::queue::{self, Unmanaged};
 use objc2::MainThreadMarker;
 use rustc_hash::FxHasher;
+use tokio::sync::Notify;
 use tracing::instrument;
 
 use crate::actor;
 use crate::common::config::Config;
 use crate::model::VirtualWorkspaceId;
 use crate::model::server::{WindowData, WorkspaceData};
+use crate::sys::dispatch::{NamedQueueExt, TimerSource};
 use crate::sys::screen::SpaceId;
-use crate::sys::timer::Timer;
 use crate::ui::menu_bar::MenuIcon;
-
 #[derive(Debug, Clone)]
 pub enum Event {
     Update {
@@ -51,36 +54,51 @@ impl Menu {
         const DEBOUNCE_MS: u64 = 150;
 
         let mut pending: Option<Event> = None;
+        let notify = Arc::new(Notify::new());
+        let armed = Arc::new(AtomicBool::new(false));
+
+        let q = Unmanaged::named("git.acsandmann.rift.menu_bar")
+            .unwrap_or_else(|| queue::global(QoS::Utility).unwrap_or_else(|| queue::main()));
+
+        let mut timer = TimerSource::new(q);
+
+        {
+            let notify_cl = Arc::clone(&notify);
+            let armed_cl = Arc::clone(&armed);
+            timer.set_handler(move || {
+                armed_cl.store(false, Ordering::Release);
+                notify_cl.notify_one();
+            });
+        }
+        timer.resume();
+
+        let schedule_timer = |t: &mut TimerSource, armed: &AtomicBool| {
+            if !armed.swap(true, Ordering::AcqRel) {
+                t.schedule_after_ms(DEBOUNCE_MS);
+            }
+        };
 
         loop {
-            if pending.is_none() {
-                match self.rx.recv().await {
-                    Some((span, event)) => {
-                        let _ = span.enter();
-                        pending = Some(event);
+            tokio::select! {
+                maybe = self.rx.recv() => {
+                    match maybe {
+                        Some((span, event)) => {
+                            let _enter = span.enter();
+                            pending = Some(event);
+                            schedule_timer(&mut timer, &armed);
+                        }
+                        None => {
+                            if let Some(ev) = pending.take() {
+                                self.handle_event(ev);
+                            }
+                            drop(timer);
+                            break;
+                        }
                     }
-                    None => break,
                 }
-            } else {
-                tokio::select! {
-                    maybe_msg = self.rx.recv() => {
-                        match maybe_msg {
-                            Some((span, event)) => {
-                                let _ = span.enter();
-                                pending = Some(event);
-                            }
-                            None => {
-                                if let Some(ev) = pending.take() {
-                                    self.handle_event(ev);
-                                }
-                                break;
-                            }
-                        }
-                    }
-                    _ = Timer::sleep(Duration::from_millis(DEBOUNCE_MS)) => {
-                        if let Some(ev) = pending.take() {
-                            self.handle_event(ev);
-                        }
+                _ = notify.notified(), if pending.is_some() => {
+                    if let Some(ev) = pending.take() {
+                        self.handle_event(ev);
                     }
                 }
             }
@@ -104,6 +122,10 @@ impl Menu {
         }
         for w in windows.iter() {
             w.id.hash(&mut hasher);
+            hasher.write_u64(w.frame.origin.x.to_bits());
+            hasher.write_u64(w.frame.origin.y.to_bits());
+            hasher.write_u64(w.frame.size.width.to_bits());
+            hasher.write_u64(w.frame.size.height.to_bits());
         }
         let sig = hasher.finish();
         if self.last_signature == Some(sig) {

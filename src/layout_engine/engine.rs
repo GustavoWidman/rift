@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use objc2_core_foundation::{CGRect, CGSize};
 use serde::{Deserialize, Serialize};
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 use super::{Direction, FloatingManager, LayoutId, LayoutSystemKind, WorkspaceLayouts};
 use crate::actor::app::{AppInfo, WindowId, pid_t};
@@ -25,7 +25,7 @@ pub struct GroupContainerInfo {
 }
 
 #[non_exhaustive]
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum LayoutCommand {
     NextWindow,
@@ -46,6 +46,9 @@ pub enum LayoutCommand {
 
     ResizeWindowGrow,
     ResizeWindowShrink,
+    ResizeWindowBy {
+        amount: f64,
+    },
 
     NextWorkspace(Option<bool>),
     PrevWorkspace(Option<bool>),
@@ -77,7 +80,7 @@ pub enum LayoutEvent {
         wid: WindowId,
         old_frame: CGRect,
         new_frame: CGRect,
-        screens: Vec<(SpaceId, CGRect)>,
+        screens: Vec<(SpaceId, CGRect, Option<String>)>,
     },
     SpaceExposed(SpaceId, CGSize),
 }
@@ -171,8 +174,7 @@ impl LayoutEngine {
         }
     }
 
-    #[allow(dead_code)]
-    fn resize_selection(&mut self, layout: LayoutId, resize_amount: f64) {
+    pub fn resize_selection(&mut self, layout: LayoutId, resize_amount: f64) {
         self.tree.resize_selection_by(layout, resize_amount);
     }
 
@@ -438,10 +440,9 @@ impl LayoutEngine {
                             match self.virtual_workspace_manager.auto_assign_window(wid, space) {
                                 Ok(ws) => (ws, false),
                                 Err(_) => {
-                                    tracing::warn!(
+                                    warn!(
                                         "Could not determine workspace for window {:?} on space {:?}; skipping assignment",
-                                        wid,
-                                        space
+                                        wid, space
                                     );
                                     continue;
                                 }
@@ -497,11 +498,11 @@ impl LayoutEngine {
             LayoutEvent::WindowAdded(space, wid) => {
                 self.debug_tree(space);
 
-                let _assigned_workspace =
+                let assigned_workspace =
                     match self.virtual_workspace_manager.auto_assign_window(wid, space) {
                         Ok(workspace_id) => workspace_id,
                         Err(e) => {
-                            tracing::warn!("Failed to auto-assign window to workspace: {:?}", e);
+                            warn!("Failed to auto-assign window to workspace: {:?}", e);
                             self.virtual_workspace_manager
                                 .active_workspace(space)
                                 .expect("No active workspace available")
@@ -512,7 +513,15 @@ impl LayoutEngine {
 
                 if should_be_floating {
                     self.floating.add_active(space, wid.pid, wid);
-                    tracing::debug!("Window {:?} is floating, excluded from layout tree", wid);
+                } else {
+                    if let Some(layout) = self.workspace_layouts.active(space, assigned_workspace) {
+                        self.tree.add_window_after_selection(layout, wid);
+                    } else {
+                        warn!(
+                            "No active layout for workspace {:?} on space {:?}; window {:?} not added to tree",
+                            assigned_workspace, space, wid
+                        );
+                    }
                 }
 
                 self.broadcast_windows_changed(space);
@@ -562,10 +571,18 @@ impl LayoutEngine {
                 new_frame,
                 screens,
             } => {
-                for (space, screen) in screens {
+                for (space, screen_frame, display_uuid) in screens {
                     let layout = self.layout(space);
-                    let gaps = &self.layout_settings.gaps;
-                    self.tree.on_window_resized(layout, wid, old_frame, new_frame, screen, gaps);
+                    let gaps =
+                        self.layout_settings.gaps.effective_for_display(display_uuid.as_deref());
+                    self.tree.on_window_resized(
+                        layout,
+                        wid,
+                        old_frame,
+                        new_frame,
+                        screen_frame,
+                        &gaps,
+                    );
 
                     if let Some(ws) = self.virtual_workspace_manager.active_workspace(space) {
                         self.workspace_layouts.mark_last_saved(space, ws, layout);
@@ -611,10 +628,9 @@ impl LayoutEngine {
 
                     if let Some(layout) = self.workspace_layouts.active(space, assigned_workspace) {
                         self.tree.add_window_after_selection(layout, wid);
-                        tracing::debug!(
+                        debug!(
                             "Re-added floating window {:?} to tiling tree in workspace {:?}",
-                            wid,
-                            assigned_workspace
+                            wid, assigned_workspace
                         );
                     }
 
@@ -629,7 +645,7 @@ impl LayoutEngine {
                 self.tree.remove_window(wid);
                 self.floating.add_floating(wid);
                 self.floating.set_last_focus(Some(wid));
-                tracing::debug!("Removed window {:?} from tiling tree, now floating", wid);
+                debug!("Removed window {:?} from tiling tree, now floating", wid);
             }
             return EventResponse::default();
         }
@@ -640,17 +656,16 @@ impl LayoutEngine {
         let workspace_id = match self.virtual_workspace_manager.active_workspace(space) {
             Some(id) => id,
             None => {
-                tracing::warn!("No active virtual workspace for space {:?}", space);
+                warn!("No active virtual workspace for space {:?}", space);
                 return EventResponse::default();
             }
         };
         let layout = match self.workspace_layouts.active(space, workspace_id) {
             Some(id) => id,
             None => {
-                tracing::warn!(
+                warn!(
                     "No active layout for workspace {:?} on space {:?}; command ignored",
-                    workspace_id,
-                    space
+                    workspace_id, space
                 );
                 return EventResponse::default();
             }
@@ -860,6 +875,15 @@ impl LayoutEngine {
                 self.tree.resize_selection_by(layout, resize_amount);
                 EventResponse::default()
             }
+            LayoutCommand::ResizeWindowBy { amount } => {
+                if is_floating {
+                    return EventResponse::default();
+                }
+
+                self.workspace_layouts.mark_last_saved(space, workspace_id, layout);
+                self.tree.resize_selection_by(layout, amount);
+                EventResponse::default()
+            }
         }
     }
 
@@ -867,6 +891,7 @@ impl LayoutEngine {
         &mut self,
         space: SpaceId,
         screen: CGRect,
+        gaps: &crate::common::config::GapSettings,
         stack_line_thickness: f64,
         stack_line_horiz: crate::common::config::HorizontalPlacement,
         stack_line_vert: crate::common::config::VerticalPlacement,
@@ -876,7 +901,7 @@ impl LayoutEngine {
             layout,
             screen,
             self.layout_settings.stack.stack_offset,
-            &self.layout_settings.gaps,
+            gaps,
             stack_line_thickness,
             stack_line_horiz,
             stack_line_vert,
@@ -887,6 +912,7 @@ impl LayoutEngine {
         &self,
         space: SpaceId,
         screen: CGRect,
+        gaps: &crate::common::config::GapSettings,
         stack_line_thickness: f64,
         stack_line_horiz: crate::common::config::HorizontalPlacement,
         stack_line_vert: crate::common::config::VerticalPlacement,
@@ -905,7 +931,7 @@ impl LayoutEngine {
                     layout,
                     screen,
                     self.layout_settings.stack.stack_offset,
-                    &self.layout_settings.gaps,
+                    gaps,
                     stack_line_thickness,
                     stack_line_horiz,
                     stack_line_vert,
@@ -946,6 +972,7 @@ impl LayoutEngine {
         &mut self,
         space: SpaceId,
         screen: CGRect,
+        gaps: &crate::common::config::GapSettings,
         stack_line_thickness: f64,
         stack_line_horiz: crate::common::config::HorizontalPlacement,
         stack_line_vert: crate::common::config::VerticalPlacement,
@@ -956,7 +983,7 @@ impl LayoutEngine {
                 layout_id,
                 screen,
                 self.layout_settings.stack.stack_offset,
-                &self.layout_settings.gaps,
+                gaps,
                 stack_line_thickness,
                 stack_line_horiz,
                 stack_line_vert,
@@ -970,6 +997,7 @@ impl LayoutEngine {
         space: SpaceId,
         workspace_id: crate::model::VirtualWorkspaceId,
         screen: CGRect,
+        gaps: &crate::common::config::GapSettings,
         stack_line_thickness: f64,
         stack_line_horiz: crate::common::config::HorizontalPlacement,
         stack_line_vert: crate::common::config::VerticalPlacement,
@@ -981,7 +1009,7 @@ impl LayoutEngine {
                 layout,
                 screen,
                 self.layout_settings.stack.stack_offset,
-                &self.layout_settings.gaps,
+                gaps,
                 stack_line_thickness,
                 stack_line_horiz,
                 stack_line_vert,
@@ -1280,7 +1308,7 @@ impl LayoutEngine {
                         self.broadcast_workspace_changed(space);
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to create new workspace: {:?}", e);
+                        warn!("Failed to create new workspace: {:?}", e);
                     }
                 }
                 EventResponse::default()
@@ -1390,15 +1418,13 @@ impl LayoutEngine {
 
     pub fn debug_log_workspace_stats(&self) {
         let stats = self.virtual_workspace_manager.get_stats();
-        tracing::info!(
+        info!(
             "Workspace Stats: {} workspaces, {} windows, {} active spaces",
-            stats.total_workspaces,
-            stats.total_windows,
-            stats.active_spaces
+            stats.total_workspaces, stats.total_windows, stats.active_spaces
         );
 
         for (workspace_id, window_count) in &stats.workspace_window_counts {
-            tracing::info!("  - '{:?}': {} windows", workspace_id, window_count);
+            info!("  - '{:?}': {} windows", workspace_id, window_count);
         }
     }
 
@@ -1412,20 +1438,20 @@ impl LayoutEngine {
                 let inactive_windows =
                     self.virtual_workspace_manager.windows_in_inactive_workspaces(space);
 
-                tracing::info!(
+                info!(
                     "Space {:?}: Active workspace '{}' with {} windows",
                     space,
                     workspace.name,
                     active_windows.len()
                 );
-                tracing::info!("  Active windows: {:?}", active_windows);
-                tracing::info!("  Inactive windows: {} total", inactive_windows.len());
+                info!("  Active windows: {:?}", active_windows);
+                info!("  Inactive windows: {} total", inactive_windows.len());
                 if !inactive_windows.is_empty() {
-                    tracing::info!("  Inactive window IDs: {:?}", inactive_windows);
+                    info!("  Inactive window IDs: {:?}", inactive_windows);
                 }
             }
         } else {
-            tracing::warn!("Space {:?}: No active workspace set", space);
+            warn!("Space {:?}: No active workspace set", space);
         }
     }
 
