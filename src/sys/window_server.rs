@@ -597,7 +597,15 @@ pub fn focus_desktop_window(screen: &ScreenInfo) -> bool {
 }
 
 #[cfg(test)]
-pub fn focus_desktop_window(_screen: &ScreenInfo) -> bool { false }
+pub fn focus_desktop_window(_screen: &ScreenInfo) -> bool {
+    TEST_DESKTOP_FOCUS_REQUESTS.with(|requests| *requests.borrow_mut() += 1);
+    false
+}
+
+#[cfg(test)]
+pub(crate) fn take_desktop_focus_requests() -> usize {
+    TEST_DESKTOP_FOCUS_REQUESTS.with(|requests| requests.replace(0))
+}
 
 #[cfg_attr(test, allow(dead_code))]
 fn window_is_effectively_invisible(alpha: f32, layer: i32) -> bool {
@@ -624,6 +632,7 @@ fn window_info_from_query(query: &WindowIterator) -> Option<WindowServerInfo> {
 #[cfg(test)]
 thread_local! {
     static TEST_MISSION_CONTROL_DOCK_OVERLAY_VISIBLE: RefCell<Option<bool>> = const { RefCell::new(None) };
+    static TEST_DESKTOP_FOCUS_REQUESTS: RefCell<usize> = const { RefCell::new(0) };
 }
 
 /// Find the topmost window at `point`, or the next window below
