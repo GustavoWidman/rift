@@ -36,6 +36,15 @@
       };
     in
     {
+      checks.rift-bin-architecture =
+        pkgs.runCommand "rift-bin-architecture-check" { nativeBuildInputs = [ pkgs.darwin.cctools ]; }
+          ''
+            for executable in rift rift-cli; do
+              test "$(lipo -archs ${self.packages.${system}.rift-bin}/bin/$executable)" = arm64
+              ${self.packages.${system}.rift-bin}/bin/$executable --version
+            done
+            touch "$out"
+          '';
       checks.darwin-module =
         assert !(disabled.launchd.user.agents ? rift);
         assert
