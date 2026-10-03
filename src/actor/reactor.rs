@@ -3853,11 +3853,6 @@ impl Reactor {
             LayoutEvent::WindowFocused(space, _) => Some(*space),
             _ => None,
         };
-        let focus_desktop = matches!(
-            event,
-            LayoutEvent::WindowRemoved(wid)
-                if self.layout_manager.layout_engine.focused_window() == Some(wid)
-        );
         self.prepare_refocus_before_removal(&event);
         let event_clone = event.clone();
         let layout_outcome =
@@ -3902,9 +3897,11 @@ impl Reactor {
         ) {
             self.maybe_send_menu_update();
         }
-        if focus_desktop && let Some(space) = self.workspace_command_space() {
-            self.focus_desktop_if_active_workspace_empty(space);
-        }
+        // Native tab switches temporarily remove the focused window before its
+        // replacement is discovered. Do not activate the desktop in that gap:
+        // it steals focus from the app before the new tab can become main.
+        // Survivor refocusing is handled above; explicit empty-workspace
+        // switches still focus the desktop through handle_layout_response.
         for space in self.space_state.iter_known_spaces() {
             self.layout_manager.layout_engine.debug_tree_desc(space, "after event", false);
         }

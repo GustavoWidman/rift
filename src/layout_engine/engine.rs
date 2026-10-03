@@ -2136,9 +2136,7 @@ impl LayoutEngine {
                     self.filter_active_workspace_windows(
                         window_store,
                         space,
-                        self.workspaces[workspace_id]
-                            .layout_system
-                            .visible_windows_in_layout(layout),
+                        self.workspaces[workspace_id].layout_system.all_windows_in_layout(layout),
                     )
                 };
                 if let Some(idx) = windows.iter().position(|&w| Some(w) == self.focused_window) {
@@ -4980,6 +4978,41 @@ mod tests {
                 .handle_event(&mut store, LayoutEvent::WindowFocused(space, windows[1]))
                 .changed
         );
+    }
+
+    #[test]
+    fn stack_next_previous_cycle_all_members_and_wrap() {
+        let mut settings = LayoutSettings::default();
+        settings.mode = LayoutMode::Stack;
+        let mut engine = LayoutEngine::new(&VirtualWorkspaceSettings::default(), &settings, None);
+        let mut store = WindowStore::default();
+        let space = SpaceId::new(99);
+        let _ = engine.handle_event(
+            &mut store,
+            LayoutEvent::SpaceExposed(space, CGSize::new(1000., 800.)),
+        );
+        let windows: Vec<_> = (1..=3).map(|index| WindowId::new(42, index)).collect();
+        for &wid in &windows {
+            let _ = engine.handle_event(&mut store, LayoutEvent::WindowAdded(space, wid));
+        }
+        let _ = engine.handle_event(&mut store, LayoutEvent::WindowFocused(space, windows[0]));
+        for (command, expected) in [
+            (LayoutCommand::NextWindow, windows[1]),
+            (LayoutCommand::NextWindow, windows[2]),
+            (LayoutCommand::NextWindow, windows[0]),
+            (LayoutCommand::PrevWindow, windows[2]),
+            (LayoutCommand::PrevWindow, windows[1]),
+        ] {
+            let response = engine.handle_command(
+                &mut store,
+                Some(space),
+                &[space],
+                &HashMap::default(),
+                command,
+            );
+            assert_eq!(response.focus_window, Some(expected));
+            assert_eq!(engine.focused_window(), Some(expected));
+        }
     }
 
     #[test]

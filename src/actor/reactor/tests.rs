@@ -6323,6 +6323,37 @@ fn closing_focused_window_refocuses_survivor() {
 }
 
 #[test]
+fn native_tab_replacement_does_not_focus_desktop_between_windows() {
+    let (mut apps, mut reactor) = test_context();
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+    let old_tab = WindowId::new(1, 1);
+    let new_tab = WindowId::new(1, 2);
+
+    apps.make_app_and_settle_on_screen(&mut reactor, screen, space, 1, make_windows(1));
+    reactor.handle_event(Event::ApplicationGloballyActivated(1));
+    reactor.send_layout_event(LayoutEvent::WindowFocused(space, old_tab));
+    crate::sys::window_server::take_desktop_focus_requests();
+
+    // Native tabs have distinct WindowServer IDs. The old tab disappears
+    // before AX has discovered the replacement, briefly emptying the layout.
+    reactor.handle_event(Event::WindowDestroyed(old_tab));
+    assert_eq!(crate::sys::window_server::take_desktop_focus_requests(), 0);
+
+    let info = make_windows(2).remove(1);
+    let wsid = info.sys_id.unwrap();
+    reactor.track_test_window_server_info(wsid, 1, info.frame);
+    reactor.mark_test_window_visible_in_space(wsid, space);
+    reactor.handle_event(Event::WindowCreated(new_tab, info, None, None));
+    reactor.handle_event(Event::ApplicationMainWindowChanged(1, Some(new_tab), Quiet::No));
+    reactor.handle_event(Event::WindowServerFocusChanged(new_tab, space));
+
+    assert_eq!(crate::sys::window_server::take_desktop_focus_requests(), 0);
+    assert_eq!(reactor.main_window(), Some(new_tab));
+    assert!(has_window_in_layout(&mut reactor, space, screen, new_tab));
+}
+
+#[test]
 fn closing_focused_app_refocuses_surviving_app() {
     let (mut apps, mut reactor) = test_context();
     let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
