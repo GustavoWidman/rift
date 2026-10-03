@@ -2126,12 +2126,10 @@ impl LayoutEngine {
             }
             LayoutCommand::NextWindow | LayoutCommand::PrevWindow => {
                 let forward = matches!(command, LayoutCommand::NextWindow);
-                let windows = if let LayoutSystemKind::Floating(system) =
+                let mut windows = if let LayoutSystemKind::Floating(system) =
                     &mut self.workspaces[workspace_id].layout_system
                 {
                     system.cycle_windows(layout)
-                } else if is_floating {
-                    self.active_floating_windows_in_workspace(window_store, space)
                 } else {
                     self.filter_active_workspace_windows(
                         window_store,
@@ -2139,6 +2137,16 @@ impl LayoutEngine {
                         self.workspaces[workspace_id].layout_system.all_windows_in_layout(layout),
                     )
                 };
+                // Keep one cycle regardless of whether the currently focused
+                // window is tiled or floating. Floating membership is backed by
+                // hash maps, so sort it for a stable forward/backward order.
+                let mut floating = self.active_floating_windows_in_workspace(window_store, space);
+                floating.sort_unstable();
+                for window in floating {
+                    if !windows.contains(&window) {
+                        windows.push(window);
+                    }
+                }
                 if let Some(idx) = windows.iter().position(|&w| Some(w) == self.focused_window) {
                     let next = if forward {
                         (idx + 1) % windows.len()
@@ -5012,6 +5020,68 @@ mod tests {
             );
             assert_eq!(response.focus_window, Some(expected));
             assert_eq!(engine.focused_window(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn next_previous_cycle_tiled_and_floating_in_active_workspace() {
+        for mode in [LayoutMode::Traditional, LayoutMode::Stack] {
+            let mut settings = LayoutSettings::default();
+            settings.mode = mode;
+            let mut engine =
+                LayoutEngine::new(&VirtualWorkspaceSettings::default(), &settings, None);
+            let mut store = WindowStore::default();
+            let space = SpaceId::new(99);
+            let _ = engine.handle_event(
+                &mut store,
+                LayoutEvent::SpaceExposed(space, CGSize::new(1000., 800.)),
+            );
+            let windows: Vec<_> = (1..=5).map(|index| WindowId::new(42, index)).collect();
+            for &wid in &windows {
+                let _ = engine.handle_event(&mut store, LayoutEvent::WindowAdded(space, wid));
+            }
+            for &wid in &windows[2..] {
+                let _ = engine.handle_event(&mut store, LayoutEvent::WindowFocused(space, wid));
+                let _ = engine.handle_command(
+                    &mut store,
+                    Some(space),
+                    &[space],
+                    &HashMap::default(),
+                    LayoutCommand::ToggleWindowFloating,
+                );
+            }
+            let _ = engine.handle_virtual_workspace_command(
+                &mut store,
+                space,
+                &LayoutCommand::MoveWindowToWorkspace {
+                    workspace: WorkspaceSelector::Index(1),
+                    follow: false,
+                    window_id: Some(windows[4].idx.get()),
+                },
+            );
+            let _ = engine.handle_event(&mut store, LayoutEvent::WindowFocused(space, windows[0]));
+            for (command, expected) in [
+                (LayoutCommand::NextWindow, windows[1]),
+                (LayoutCommand::NextWindow, windows[2]),
+                (LayoutCommand::NextWindow, windows[3]),
+                (LayoutCommand::NextWindow, windows[0]),
+                (LayoutCommand::PrevWindow, windows[3]),
+                (LayoutCommand::PrevWindow, windows[2]),
+                (LayoutCommand::PrevWindow, windows[1]),
+                (LayoutCommand::PrevWindow, windows[0]),
+            ] {
+                let response = engine.handle_command(
+                    &mut store,
+                    Some(space),
+                    &[space],
+                    &HashMap::default(),
+                    command,
+                );
+                assert_eq!(response.focus_window, Some(expected), "layout: {mode:?}");
+                assert_eq!(engine.focused_window(), Some(expected));
+                assert!(!engine.is_window_floating(windows[0]));
+                assert!(engine.is_window_floating(windows[2]));
+            }
         }
     }
 
