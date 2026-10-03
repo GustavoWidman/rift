@@ -67,13 +67,20 @@
           sha256 = "0sxmc757xrni2h92vx4w9cnhkbnlvzk8hxajbllkf8q2xqvnmyxj";
         };
         phases = [ "installPhase" ];
+        nativeBuildInputs = [ pkgs.darwin.cctools ];
         installPhase = ''
           mkdir -p $out/bin
-          install -m755 $src/rift $src/rift-cli $out/bin/
+          # The upstream universal binary mixes an unsigned Intel slice with a
+          # signed ARM slice. TCC can record a requirement that then fails for
+          # the running ARM process. Install only our supported architecture.
+          for executable in rift rift-cli; do
+            lipo "$src/$executable" -thin arm64 -output "$out/bin/$executable"
+            chmod 755 "$out/bin/$executable"
+          done
           install -Dm644 $src/rift.default.toml $out/share/rift/rift.default.toml
         '';
         meta = {
-          description = "Upstream universal macOS binaries for Rift";
+          description = "Upstream Apple Silicon macOS binaries for Rift";
           homepage = "https://github.com/acsandmann/rift";
           license = lib.licenses.asl20;
           platforms = [ "aarch64-darwin" ];
