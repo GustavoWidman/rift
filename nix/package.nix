@@ -61,10 +61,10 @@
 
       rift-bin = pkgs.stdenv.mkDerivation {
         pname = "rift-bin";
-        version = "0.6.4";
+        version = "0.6.9";
         src = builtins.fetchTarball {
-          url = "https://github.com/acsandmann/rift/releases/download/v0.6.4/rift-universal-macos-0.6.4.tar.gz";
-          sha256 = "0sxmc757xrni2h92vx4w9cnhkbnlvzk8hxajbllkf8q2xqvnmyxj";
+          url = "https://github.com/acsandmann/rift/releases/download/v0.6.9/rift-universal-macos-0.6.9.tar.gz";
+          sha256 = "1n8fvxh0fy9zlaan7rblv2xc6fhs87p4gd24n6vradz9zgijx56i";
         };
         phases = [ "installPhase" ];
         nativeBuildInputs = [ pkgs.darwin.cctools ];
