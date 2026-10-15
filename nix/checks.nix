@@ -27,6 +27,7 @@
       disabled = eval { enable = false; };
       withoutConfig = eval { config = null; };
       pathConfig = eval { config = "/tmp/rift config's.toml"; };
+      fileConfig = eval { config = ../rift.default.toml; };
       tableConfig = eval { config.settings.animate = false; };
       binaryConfig = eval { package = self.packages.${system}.rift-bin; };
       arguments = config: config.launchd.user.agents.rift.serviceConfig.ProgramArguments;
@@ -55,6 +56,7 @@
           ];
         assert arguments withoutConfig == [ "${self.packages.${system}.default}/bin/rift" ];
         assert builtins.elemAt (arguments pathConfig) 2 == "/tmp/rift config's.toml";
+        assert builtins.hasContext (builtins.elemAt (arguments fileConfig) 2);
         assert
           builtins.elemAt (arguments binaryConfig) 2
           == "${self.packages.${system}.rift-bin}/share/rift/rift.default.toml";
@@ -75,6 +77,12 @@
           }/share/rift/rift.default.toml']
           assert plist['RunAtLoad'] is True
           assert plist['LimitLoadToSessionType'] == 'Aqua'
+          with open('${
+            pkgs.writeText "rift-file-config.plist" fileConfig.environment.userLaunchAgents."org.nixos.rift.plist".text
+          }', 'rb') as f:
+              file_plist = plistlib.load(f)
+          with open(file_plist['ProgramArguments'][2], 'rb') as f:
+              assert 'settings' in tomllib.load(f)
           PY
           touch "$out"
         '';
