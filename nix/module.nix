@@ -53,7 +53,7 @@
             ]
             ++ lib.optionals (configFile != null) [
               "--config"
-              (toString configFile)
+              "${configFile}"
             ];
             EnvironmentVariables = {
               RUST_LOG = "error,warn,info";
