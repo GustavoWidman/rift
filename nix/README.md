@@ -2,7 +2,7 @@
 
 The flake supports Apple Silicon macOS. `packages.default` and
 `packages.rift` build the checked-out source, including `rift` and `rift-cli`.
-`packages.rift-bin` extracts the ARM64 binaries from the pinned upstream 0.6.9 universal release.
+`packages.rift-bin` extracts the ARM64 binaries from the pinned upstream 0.7.0 universal release.
 The unsigned Intel slice is omitted so macOS can use the ARM code signature
 consistently for Accessibility permissions.
 Both packages include their matching default configuration under
